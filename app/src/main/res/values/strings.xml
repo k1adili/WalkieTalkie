@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Walkie Talkie</string>
+    <string name="widget_description">See your channel and talk straight from the home screen.</string>
 </resources>

@@ -18,4 +18,8 @@ data class UiState(
     val localIp: String? = null,
     val tapToggle: Boolean = false,
     val keepScreenOn: Boolean = false,
+    /** Where audio goes right now: "Phone", "Bluetooth headset" or "Wired headset". */
+    val route: String = "Phone",
+    val useHeadset: Boolean = true,
+    val rxGain: Float = 2.5f,
 )

@@ -398,7 +398,7 @@ private fun StatusText(mode: PttMode, state: UiState) {
             )
         }
         Text(
-            "Channel ${state.channel}",
+            if (state.route == "Phone") "Channel ${state.channel}" else "Channel ${state.channel} · ${state.route}",
             style = MaterialTheme.typography.labelLarge,
             color = scheme.onSurfaceVariant,
         )

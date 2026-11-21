@@ -18,8 +18,10 @@ private enum class Screen { MAIN, SETTINGS }
 fun WalkieRoot(
     engine: WalkieEngine,
     micGranted: Boolean,
+    btGranted: Boolean,
     permanentlyDenied: Boolean,
     onRequestPermission: () -> Unit,
+    onRequestBluetooth: () -> Unit,
     onOpenAppSettings: () -> Unit,
     onStartService: () -> Unit,
     onStopService: () -> Unit,
@@ -57,9 +59,13 @@ fun WalkieRoot(
 
                 Screen.SETTINGS -> SettingsScreen(
                     state = state,
+                    btGranted = btGranted,
                     onBack = { screen = Screen.MAIN },
                     onName = engine::setName,
                     onTapToggle = engine::setTapToggle,
+                    onRxGain = engine::setRxGain,
+                    onUseHeadset = engine::setUseHeadset,
+                    onRequestBluetooth = onRequestBluetooth,
                     onKeepScreenOn = engine::setKeepScreenOn,
                     onTurnOff = {
                         onStopService()

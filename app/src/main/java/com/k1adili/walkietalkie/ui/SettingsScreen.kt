@@ -17,6 +17,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -27,11 +28,12 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -51,13 +53,22 @@ private fun versionName(context: Context): String =
     runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }
         .getOrNull() ?: ""
 
+@Composable
+private fun SectionTitle(text: String) {
+    Text(text, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     state: UiState,
+    btGranted: Boolean,
     onBack: () -> Unit,
     onName: (String) -> Unit,
     onTapToggle: (Boolean) -> Unit,
+    onRxGain: (Float) -> Unit,
+    onUseHeadset: (Boolean) -> Unit,
+    onRequestBluetooth: () -> Unit,
     onKeepScreenOn: (Boolean) -> Unit,
     onTurnOff: () -> Unit,
 ) {
@@ -89,7 +100,7 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(24.dp),
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Your name", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                SectionTitle("Your name")
                 OutlinedTextField(
                     value = nameField,
                     onValueChange = {
@@ -108,7 +119,7 @@ fun SettingsScreen(
             }
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Talk button", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                SectionTitle("Talk button")
                 SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                     SegmentedButton(
                         selected = !state.tapToggle,
@@ -132,9 +143,56 @@ fun SettingsScreen(
                 )
             }
 
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) { SectionTitle("Incoming volume boost") }
+                    Text(
+                        "${(state.rxGain * 100).toInt()}%",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = scheme.primary,
+                    )
+                }
+                Slider(
+                    value = state.rxGain,
+                    onValueChange = onRxGain,
+                    valueRange = AppSettings.MIN_GAIN..AppSettings.MAX_GAIN,
+                )
+                Text(
+                    "Makes other people louder on top of your phone's volume. " +
+                        "If it sounds distorted, lower it.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = scheme.onSurfaceVariant,
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        SectionTitle("Use headset microphone")
+                        Text(
+                            "Audio route: ${state.route}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = scheme.primary,
+                        )
+                    }
+                    Switch(checked = state.useHeadset, onCheckedChange = onUseHeadset)
+                }
+                Text(
+                    "When a Bluetooth headset is connected, talk and listen through it instead of " +
+                        "the phone. Bluetooth switches to call-quality audio while Walkie Talkie is on.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = scheme.onSurfaceVariant,
+                )
+                if (state.useHeadset && !btGranted) {
+                    TextButton(onClick = onRequestBluetooth) {
+                        Text("Allow Bluetooth access", fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Keep screen on", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    SectionTitle("Keep screen on")
                     Text(
                         "Stops the display from sleeping while the app is open.",
                         style = MaterialTheme.typography.bodyMedium,
@@ -146,23 +204,15 @@ fun SettingsScreen(
 
             Surface(shape = RoundedCornerShape(20.dp), color = scheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("About", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    SectionTitle("About")
                     Text(
                         "Works over Wi-Fi and phone hotspots. Audio only travels inside your local network.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = scheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Version $version",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = scheme.onSurfaceVariant,
-                    )
-                    Text(
-                        "Made by Keyvan Adili",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = scheme.onSurfaceVariant,
-                    )
+                    Text("Version $version", style = MaterialTheme.typography.labelLarge, color = scheme.onSurfaceVariant)
+                    Text("Made by Keyvan Adili", style = MaterialTheme.typography.labelLarge, color = scheme.onSurfaceVariant)
                 }
             }
 

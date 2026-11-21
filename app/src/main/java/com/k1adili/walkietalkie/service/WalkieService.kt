@@ -11,14 +11,32 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import com.k1adili.walkietalkie.widget.WalkieWidgetProvider
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import com.k1adili.walkietalkie.MainActivity
 import com.k1adili.walkietalkie.R
 import com.k1adili.walkietalkie.WalkieApp
+
+private data class WidgetKey(
+    val running: Boolean,
+    val channel: Int,
+    val hereCount: Int,
+    val transmitting: Boolean,
+    val talker: String?,
+    val online: Boolean,
+)
 
 /** Keeps the engine alive (and the microphone allowed) while the app is in the background. */
 class WalkieService : Service() {
 
     private val engine get() = (application as WalkieApp).engine
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     override fun onCreate() {
         super.onCreate()
@@ -31,6 +49,23 @@ class WalkieService : Service() {
             setShowBadge(false)
         }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+
+        // Keep the home-screen widget in sync with what the engine is doing.
+        scope.launch {
+            engine.state
+                .map { st ->
+                    WidgetKey(
+                        running = st.running,
+                        channel = st.channel,
+                        hereCount = st.peers.count { it.channel == st.channel },
+                        transmitting = st.transmitting,
+                        talker = st.talkerName,
+                        online = st.localIp != null,
+                    )
+                }
+                .distinctUntilChanged()
+                .collect { WalkieWidgetProvider.updateAll(applicationContext) }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -59,6 +94,8 @@ class WalkieService : Service() {
 
     override fun onDestroy() {
         engine.stop()
+        scope.cancel()
+        WalkieWidgetProvider.updateAll(applicationContext)
         super.onDestroy()
     }
 

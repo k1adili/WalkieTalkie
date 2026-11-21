@@ -36,6 +36,19 @@ class AppSettings(context: Context) {
             prefs.edit().putBoolean("tap_toggle", value).apply()
         }
 
+    var useHeadset: Boolean
+        get() = prefs.getBoolean("use_headset", true)
+        set(value) {
+            prefs.edit().putBoolean("use_headset", value).apply()
+        }
+
+    /** Receive loudness multiplier, 1x..5x. */
+    var rxGain: Float
+        get() = prefs.getFloat("rx_gain", DEFAULT_RX_GAIN).coerceIn(MIN_GAIN, MAX_GAIN)
+        set(value) {
+            prefs.edit().putFloat("rx_gain", value).apply()
+        }
+
     var keepScreenOn: Boolean
         get() = prefs.getBoolean("keep_screen_on", false)
         set(value) {
@@ -44,6 +57,9 @@ class AppSettings(context: Context) {
 
     companion object {
         const val MAX_NAME_LENGTH = 20
+        const val MIN_GAIN = 1f
+        const val MAX_GAIN = 5f
+        const val DEFAULT_RX_GAIN = 2.5f
 
         fun defaultName(): String = (Build.MODEL ?: "Phone").take(MAX_NAME_LENGTH)
     }

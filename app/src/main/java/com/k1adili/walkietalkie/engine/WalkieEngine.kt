@@ -26,7 +26,9 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.concurrent.thread
+import kotlin.math.abs
 import kotlin.math.sqrt
+import kotlin.math.tanh
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,6 +39,20 @@ private const val TICK_MS = 250L
 private const val TALK_TIMEOUT_MS = 600L
 private const val PEER_TIMEOUT_MS = 7_000L
 private const val PLAYBACK_TAIL_MS = 500L
+private const val TX_GAIN = 1.8f
+private const val SOFT_KNEE = 20_000f
+
+/** Applies gain, then gently rounds off peaks above the knee instead of hard-clipping them. */
+private fun softGain(sample: Int, gain: Float): Short {
+    val v = sample * gain
+    val a = abs(v)
+    val out = if (a <= SOFT_KNEE) {
+        a
+    } else {
+        SOFT_KNEE + (32767f - SOFT_KNEE) * tanh((a - SOFT_KNEE) / (32767f - SOFT_KNEE))
+    }
+    return (if (v < 0f) -out else out).toInt().toShort()
+}
 
 private data class PeerInfo(
     val id: Int,
@@ -82,6 +98,15 @@ class WalkieEngine(context: Context, private val settings: AppSettings) {
         Thread(r, "walkie-io").apply { isDaemon = true }
     }
 
+    @Volatile private var routeVersion = 0
+    @Volatile private var rxGain = settings.rxGain
+    @Volatile private var useHeadset = settings.useHeadset
+
+    private val router = AudioRouter(appContext) {
+        routeVersion++
+        publish()
+    }
+
     @Volatile private var running = false
     @Volatile private var transmitting = false
     @Volatile private var txSession = 0
@@ -120,6 +145,8 @@ class WalkieEngine(context: Context, private val settings: AppSettings) {
         socket = sock
         running = true
         acquireLocks()
+        router.setEnabled(useHeadset)
+        router.start()
         net = scanNetwork()
         rxThread = thread(name = "walkie-rx", isDaemon = true) { rxLoop(sock) }
         playThread = thread(name = "walkie-play", isDaemon = true) { playLoop() }
@@ -147,6 +174,7 @@ class WalkieEngine(context: Context, private val settings: AppSettings) {
         rxThread?.interrupt()
         playThread?.interrupt()
         tickThread?.interrupt()
+        router.stop()
         releaseLocks()
         peers.clear()
         buffers.clear()
@@ -186,6 +214,23 @@ class WalkieEngine(context: Context, private val settings: AppSettings) {
         settings.keepScreenOn = enabled
         publish()
     }
+
+    fun setRxGain(gain: Float) {
+        val g = gain.coerceIn(AppSettings.MIN_GAIN, AppSettings.MAX_GAIN)
+        rxGain = g
+        settings.rxGain = g
+        publish()
+    }
+
+    fun setUseHeadset(enabled: Boolean) {
+        useHeadset = enabled
+        settings.useHeadset = enabled
+        router.setEnabled(enabled)
+        publish()
+    }
+
+    /** Call after the Bluetooth permission was granted so a connected headset is picked up. */
+    fun refreshAudioRoute() = router.refresh()
 
     fun startTalk() {
         if (!running || transmitting) return
@@ -399,6 +444,9 @@ class WalkieEngine(context: Context, private val settings: AppSettings) {
                 Log.e(TAG, "AudioRecord failed to initialise")
                 return
             }
+            if (router.route == AudioRouter.Route.BLUETOOTH) {
+                router.bluetoothInput()?.let { rec.setPreferredDevice(it) }
+            }
             rec.startRecording()
 
             val pcm = ShortArray(Protocol.FRAME_SAMPLES)
@@ -412,7 +460,10 @@ class WalkieEngine(context: Context, private val settings: AppSettings) {
                     filled += n
                 }
                 if (filled < pcm.size) break
-                for (i in pcm.indices) payload[i] = MuLaw.encode(pcm[i])
+                for (i in pcm.indices) {
+                    pcm[i] = softGain(pcm[i].toInt(), TX_GAIN)
+                    payload[i] = MuLaw.encode(pcm[i])
+                }
                 emitLevel(rms(pcm))
                 val packet = Protocol.audio(myId, txChannel, seq++ and 0xFFFF, payload)
                 for (p in peers.values) {
@@ -451,10 +502,16 @@ class WalkieEngine(context: Context, private val settings: AppSettings) {
             AudioFormat.ENCODING_PCM_16BIT,
         )
         val size = maxOf(minBuf, Protocol.FRAME_SAMPLES * 2 * 3) // at least 60 ms
+        // Through a Bluetooth headset audio must use the call path; on the phone, media volume is louder.
+        val usage = if (router.route == AudioRouter.Route.BLUETOOTH) {
+            AudioAttributes.USAGE_VOICE_COMMUNICATION
+        } else {
+            AudioAttributes.USAGE_MEDIA
+        }
         return AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setUsage(usage)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build(),
             )
@@ -471,24 +528,31 @@ class WalkieEngine(context: Context, private val settings: AppSettings) {
             .build()
     }
 
+    private fun createTrack(): AudioTrack? {
+        return try {
+            val t = buildTrack()
+            if (t.state == AudioTrack.STATE_INITIALIZED) {
+                t
+            } else {
+                t.release()
+                null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Could not create AudioTrack", e)
+            null
+        }
+    }
+
     /**
      * While anyone is talking this loop writes exactly one 20 ms frame per iteration (silence if
      * the jitter buffer has nothing). The blocking AudioTrack.write paces it in real time, which
      * is what lets the jitter buffer actually fill up instead of being drained instantly.
+     * When the audio route changes (headset connected/removed) the track is rebuilt while idle.
      */
     private fun playLoop() {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-        val track = try {
-            buildTrack()
-        } catch (e: Exception) {
-            Log.e(TAG, "Could not create AudioTrack", e)
-            return
-        }
-        if (track.state != AudioTrack.STATE_INITIALIZED) {
-            Log.e(TAG, "AudioTrack failed to initialise")
-            track.release()
-            return
-        }
+        var track: AudioTrack = createTrack() ?: return
+        var builtVersion = routeVersion
         val acc = IntArray(Protocol.FRAME_SAMPLES)
         val mix = ShortArray(Protocol.FRAME_SAMPLES)
         var playing = false
@@ -503,6 +567,11 @@ class WalkieEngine(context: Context, private val settings: AppSettings) {
                         playing = false
                         if (!transmitting) _level.value = 0f
                     }
+                    if (builtVersion != routeVersion) {
+                        track.release()
+                        track = createTrack() ?: return
+                        builtVersion = routeVersion
+                    }
                     Thread.sleep(10)
                     continue
                 }
@@ -515,7 +584,8 @@ class WalkieEngine(context: Context, private val settings: AppSettings) {
                     val f = b.poll() ?: continue
                     for (i in acc.indices) acc[i] += f[i]
                 }
-                for (i in mix.indices) mix[i] = acc[i].coerceIn(-32768, 32767).toShort()
+                val gain = rxGain
+                for (i in mix.indices) mix[i] = softGain(acc[i], gain)
                 val written = track.write(mix, 0, mix.size)
                 if (written < 0) {
                     Log.w(TAG, "AudioTrack.write failed: $written")
@@ -529,7 +599,7 @@ class WalkieEngine(context: Context, private val settings: AppSettings) {
             try {
                 track.stop()
             } catch (e: IllegalStateException) {
-                // already stopped
+                // already stopped or released
             }
             track.release()
         }
@@ -564,6 +634,9 @@ class WalkieEngine(context: Context, private val settings: AppSettings) {
                 localIp = net.localIps.firstOrNull(),
                 tapToggle = tapToggle,
                 keepScreenOn = keepScreenOn,
+                route = router.route.label,
+                useHeadset = useHeadset,
+                rxGain = rxGain,
             )
         }
     }
